@@ -1,44 +1,45 @@
 use crate::error::{Error, Result};
 use crate::manifest::Name;
-use crate::Test;
+use crate::{Args, Test};
 use std::collections::BTreeMap as Map;
 use std::path::PathBuf;
 
 #[derive(Debug)]
-pub(crate) struct ExpandedTest {
+pub(crate) struct ExpandedTest<'a> {
     pub name: Name,
     pub test: Test,
     pub error: Option<Error>,
+    pub args: &'a Args,
     is_from_glob: bool,
 }
 
-pub(crate) fn expand_globs(tests: &[Test]) -> Vec<ExpandedTest> {
+pub(crate) fn expand_globs<'a>(tests: &'a [(Test, Args)]) -> Vec<ExpandedTest<'a>> {
     let mut set = ExpandedTestSet::new();
 
-    for test in tests {
+    for (test, args) in tests {
         match test.path.to_str() {
             Some(utf8) if utf8.contains('*') => match glob(utf8) {
                 Ok(paths) => {
                     let expected = test.expected;
                     for path in paths {
-                        set.insert(Test { path, expected }, None, true);
+                        set.insert(Test { path, expected }, args, None, true);
                     }
                 }
-                Err(error) => set.insert(test.clone(), Some(error), false),
+                Err(error) => set.insert(test.clone(), args, Some(error), false),
             },
-            _ => set.insert(test.clone(), None, false),
+            _ => set.insert(test.clone(), args, None, false),
         }
     }
 
     set.vec
 }
 
-struct ExpandedTestSet {
-    vec: Vec<ExpandedTest>,
+struct ExpandedTestSet<'a> {
+    vec: Vec<ExpandedTest<'a>>,
     path_to_index: Map<PathBuf, usize>,
 }
 
-impl ExpandedTestSet {
+impl<'a> ExpandedTestSet<'a> {
     fn new() -> Self {
         ExpandedTestSet {
             vec: Vec::new(),
@@ -46,7 +47,7 @@ impl ExpandedTestSet {
         }
     }
 
-    fn insert(&mut self, test: Test, error: Option<Error>, is_from_glob: bool) {
+    fn insert(&mut self, test: Test, args: &'a Args, error: Option<Error>, is_from_glob: bool) {
         if let Some(&i) = self.path_to_index.get(&test.path) {
             let prev = &mut self.vec[i];
             if prev.is_from_glob {
@@ -62,6 +63,7 @@ impl ExpandedTestSet {
             name,
             test,
             error,
+            args,
             is_from_glob,
         });
     }

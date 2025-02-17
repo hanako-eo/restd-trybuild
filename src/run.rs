@@ -9,7 +9,7 @@ use crate::manifest::{Bin, Manifest, Name, Package, Workspace};
 use crate::message::{self, Fail, Warn};
 use crate::normalize::{self, Context, Variations};
 use crate::path::CanonicalPath;
-use crate::{features, Expected, Runner, Test};
+use crate::{features, Args, Expected, Runner, Test};
 use serde_derive::Deserialize;
 use std::collections::{BTreeMap as Map, BTreeSet as Set};
 use std::env;
@@ -47,7 +47,7 @@ struct Report {
 }
 
 impl Runner {
-    pub(crate) fn run(&mut self) {
+    pub(crate) fn run(&mut self, global_args: &Args) {
         let mut tests = expand_globs(&self.tests);
         filter(&mut tests);
 
@@ -73,7 +73,7 @@ impl Runner {
         if tests.is_empty() {
             message::no_tests_enabled();
         } else if project.keep_going && !project.has_pass {
-            report = match self.run_all(&project, tests) {
+            report = match self.run_all(&project, tests, global_args) {
                 Ok(failures) => failures,
                 Err(err) => {
                     message::test_fail(err);
@@ -85,7 +85,7 @@ impl Runner {
             }
         } else {
             for test in tests {
-                match test.run(&project) {
+                match test.run(&project, global_args) {
                     Ok(Outcome::Passed) => {}
                     Ok(Outcome::CreatedWip) => report.created_wip += 1,
                     Err(err) => {
@@ -191,7 +191,8 @@ impl Runner {
         ";
         fs::write(path!(project.dir / "main.rs"), &main_rs[..])?;
 
-        cargo::build_dependencies(project)?;
+        // TODO
+        cargo::build_dependencies(project, &Args::new(), &Args::new())?;
 
         Ok(())
     }
@@ -318,7 +319,7 @@ impl Runner {
         Ok(manifest)
     }
 
-    fn run_all(&self, project: &Project, tests: Vec<ExpandedTest>) -> Result<Report> {
+    fn run_all(&self, project: &Project, tests: Vec<ExpandedTest>, args: &Args) -> Result<Report> {
         let mut report = Report {
             failures: 0,
             created_wip: 0,
@@ -330,7 +331,8 @@ impl Runner {
             path_map.insert(src_path, (&t.name, &t.test));
         }
 
-        let output = cargo::build_all_tests(project)?;
+        // TODO
+        let output = cargo::build_all_tests(project, args, &Args::new())?;
         let parsed = parse_cargo_json(project, &output.stdout, &path_map);
         let fallback = Stderr::default();
 
@@ -345,7 +347,7 @@ impl Runner {
             if t.error.is_none() {
                 let src_path = CanonicalPath::new(&project.source_dir.join(&t.test.path));
                 let this_test = parsed.stderrs.get(&src_path).unwrap_or(&fallback);
-                match t.test.check(project, &t.name, this_test, "") {
+                match t.test.check(project, &t.name, args, t.args, this_test, "") {
                     Ok(Outcome::Passed) => {}
                     Ok(Outcome::CreatedWip) => report.created_wip += 1,
                     Err(error) => t.error = Some(error),
@@ -368,7 +370,7 @@ enum Outcome {
 }
 
 impl Test {
-    fn run(&self, project: &Project, name: &Name) -> Result<Outcome> {
+    fn run(&self, project: &Project, name: &Name, global_args: &Args, local_args: &Args) -> Result<Outcome> {
         let show_expected = project.has_pass && project.has_compile_fail;
         message::begin_test(self, show_expected);
         check_exists(&self.path)?;
@@ -377,17 +379,19 @@ impl Test {
         let src_path = CanonicalPath::new(&project.source_dir.join(&self.path));
         path_map.insert(src_path.clone(), (name, self));
 
-        let output = cargo::build_test(project, name)?;
+        let output = cargo::build_test(project, name, global_args, local_args)?;
         let parsed = parse_cargo_json(project, &output.stdout, &path_map);
         let fallback = Stderr::default();
         let this_test = parsed.stderrs.get(&src_path).unwrap_or(&fallback);
-        self.check(project, name, this_test, &parsed.stdout)
+        self.check(project, name, global_args, local_args, this_test, &parsed.stdout)
     }
 
     fn check(
         &self,
         project: &Project,
         name: &Name,
+        global_args: &Args,
+        local_args: &Args,
         result: &Stderr,
         build_stdout: &str,
     ) -> Result<Outcome> {
@@ -400,6 +404,8 @@ impl Test {
             self,
             project,
             name,
+            global_args,
+            local_args,
             result.success,
             build_stdout,
             &result.stderr,
@@ -410,6 +416,8 @@ impl Test {
         &self,
         project: &Project,
         name: &Name,
+        global_args: &Args,
+        local_args: &Args,
         success: bool,
         build_stdout: &str,
         variations: &Variations,
@@ -420,7 +428,7 @@ impl Test {
             return Err(Error::CargoFail);
         }
 
-        let mut output = cargo::run_test(project, name)?;
+        let mut output = cargo::run_test(project, name, global_args, local_args)?;
         output.stdout.splice(..0, build_stdout.bytes());
         message::output(preferred, &output);
         if output.status.success() {
@@ -434,6 +442,8 @@ impl Test {
         &self,
         project: &Project,
         _name: &Name,
+        _global_args: &Args,
+        _local_args: &Args,
         success: bool,
         build_stdout: &str,
         variations: &Variations,
@@ -507,10 +517,10 @@ fn check_exists(path: &Path) -> Result<()> {
     }
 }
 
-impl ExpandedTest {
-    fn run(self, project: &Project) -> Result<Outcome> {
+impl<'a> ExpandedTest<'a> {
+    fn run(self, project: &Project, args: &Args) -> Result<Outcome> {
         match self.error {
-            None => self.test.run(project, &self.name),
+            None => self.test.run(project, &self.name, args, self.args),
             Some(error) => {
                 let show_expected = false;
                 message::begin_test(&self.test, show_expected);

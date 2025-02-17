@@ -2,7 +2,7 @@ use crate::directory::Directory;
 use crate::error::{Error, Result};
 use crate::manifest::Name;
 use crate::run::Project;
-use crate::rustflags;
+use crate::{rustflags, Args};
 use serde_derive::Deserialize;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
@@ -35,17 +35,25 @@ fn raw_cargo() -> Command {
     }
 }
 
-fn cargo(project: &Project) -> Command {
+fn cargo(project: &Project, global_args: &Args, local_args: &Args) -> Command {
     let mut cmd = raw_cargo();
     cmd.current_dir(&project.dir);
     cmd.envs(cargo_target_dir(project));
     cmd.env_remove("RUSTFLAGS");
     cmd.env("CARGO_INCREMENTAL", "0");
     cmd.arg("--offline");
+    for arg in global_args.cargoflags() {
+        cmd.arg(arg);
+    }
+    for arg in local_args.cargoflags() {
+        cmd.arg(arg);
+    }
 
-    let rustflags = rustflags::toml();
+    let rustflags = rustflags::toml(global_args.rustflags().into_iter().chain(local_args.rustflags()));
     cmd.arg(format!("--config=build.rustflags={rustflags}"));
     cmd.arg(format!("--config=target.{TARGET}.rustflags={rustflags}"));
+
+    println!("{:?}", cmd.get_args().collect::<Vec<_>>());
 
     cmd
 }
@@ -70,15 +78,15 @@ pub(crate) fn manifest_dir() -> Result<Directory> {
     }
 }
 
-pub(crate) fn build_dependencies(project: &mut Project) -> Result<()> {
+pub(crate) fn build_dependencies(project: &mut Project, global_args: &Args, local_args: &Args) -> Result<()> {
     let workspace_cargo_lock = path!(project.workspace / "Cargo.lock");
     if workspace_cargo_lock.exists() {
         let _ = fs::copy(workspace_cargo_lock, path!(project.dir / "Cargo.lock"));
     } else {
-        let _ = cargo(project).arg("generate-lockfile").status();
+        let _ = cargo(project, global_args, local_args).arg("generate-lockfile").status();
     }
 
-    let mut command = cargo(project);
+    let mut command = cargo(project, global_args, local_args);
     command
         .arg(if project.has_pass { "build" } else { "check" })
         .args(target())
@@ -103,8 +111,8 @@ pub(crate) fn build_dependencies(project: &mut Project) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn build_test(project: &Project, name: &Name) -> Result<Output> {
-    let _ = cargo(project)
+pub(crate) fn build_test(project: &Project, name: &Name, global_args: &Args, local_args: &Args) -> Result<Output> {
+    let _ = cargo(project, global_args, local_args)
         .arg("clean")
         .arg("--package")
         .arg(&project.name)
@@ -113,7 +121,7 @@ pub(crate) fn build_test(project: &Project, name: &Name) -> Result<Output> {
         .stderr(Stdio::null())
         .status();
 
-    cargo(project)
+    cargo(project, global_args, local_args)
         .arg(if project.has_pass { "build" } else { "check" })
         .args(target())
         .arg("--bin")
@@ -126,8 +134,8 @@ pub(crate) fn build_test(project: &Project, name: &Name) -> Result<Output> {
         .map_err(Error::Cargo)
 }
 
-pub(crate) fn build_all_tests(project: &Project) -> Result<Output> {
-    let _ = cargo(project)
+pub(crate) fn build_all_tests(project: &Project, global_args: &Args, local_args: &Args) -> Result<Output> {
+    let _ = cargo(project, global_args, local_args)
         .arg("clean")
         .arg("--package")
         .arg(&project.name)
@@ -136,7 +144,7 @@ pub(crate) fn build_all_tests(project: &Project) -> Result<Output> {
         .stderr(Stdio::null())
         .status();
 
-    cargo(project)
+    cargo(project, global_args, local_args)
         .arg(if project.has_pass { "build" } else { "check" })
         .args(target())
         .arg("--bins")
@@ -149,8 +157,8 @@ pub(crate) fn build_all_tests(project: &Project) -> Result<Output> {
         .map_err(Error::Cargo)
 }
 
-pub(crate) fn run_test(project: &Project, name: &Name) -> Result<Output> {
-    cargo(project)
+pub(crate) fn run_test(project: &Project, name: &Name, global_args: &Args, local_args: &Args) -> Result<Output> {
+    cargo(project, global_args, local_args)
         .arg("run")
         .args(target())
         .arg("--bin")

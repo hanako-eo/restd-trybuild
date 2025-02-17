@@ -265,6 +265,7 @@ mod term;
 #[macro_use]
 mod path;
 
+mod args;
 mod cargo;
 mod dependencies;
 mod diff;
@@ -281,6 +282,7 @@ mod normalize;
 mod run;
 mod rustflags;
 
+pub use args::*;
 use std::cell::RefCell;
 use std::panic::RefUnwindSafe;
 use std::path::{Path, PathBuf};
@@ -289,11 +291,12 @@ use std::thread;
 #[derive(Debug)]
 pub struct TestCases {
     runner: RefCell<Runner>,
+    args: Args,
 }
 
 #[derive(Debug)]
 struct Runner {
-    tests: Vec<Test>,
+    tests: Vec<(Test, Args)>,
 }
 
 #[derive(Clone, Debug)]
@@ -313,21 +316,56 @@ impl TestCases {
     pub fn new() -> Self {
         TestCases {
             runner: RefCell::new(Runner { tests: Vec::new() }),
+            args: Args::new(),
         }
     }
 
     pub fn pass<P: AsRef<Path>>(&self, path: P) {
-        self.runner.borrow_mut().tests.push(Test {
-            path: path.as_ref().to_owned(),
-            expected: Expected::Pass,
-        });
+        self.runner.borrow_mut().tests.push((
+            Test {
+                path: path.as_ref().to_owned(),
+                expected: Expected::Pass,
+            },
+            Args::new()
+        ));
+    }
+
+    pub fn pass_args<P, F>(&self, path: P, build_args: F)
+    where
+        P: AsRef<Path>,
+        F: FnOnce(Args) -> Args,
+    {
+        self.runner.borrow_mut().tests.push((
+            Test {
+                path: path.as_ref().to_owned(),
+                expected: Expected::Pass,
+            },
+            build_args(Args::new())
+        ));
     }
 
     pub fn compile_fail<P: AsRef<Path>>(&self, path: P) {
-        self.runner.borrow_mut().tests.push(Test {
-            path: path.as_ref().to_owned(),
-            expected: Expected::CompileFail,
-        });
+        self.runner.borrow_mut().tests.push((
+            Test {
+                path: path.as_ref().to_owned(),
+                expected: Expected::CompileFail,
+            },
+            Args::new()
+        ));
+    }
+
+    pub fn compile_fail_args<P, F>(&self, path: P, build_args: F)
+    where
+        P: AsRef<Path>,
+        F: FnOnce(Args) -> Args,
+    {
+        self.runner.borrow_mut().tests.push((
+            Test {
+                path: path.as_ref().to_owned(),
+                expected: Expected::CompileFail,
+            },
+            build_args(Args::new())
+        ));
     }
 }
 
@@ -337,7 +375,7 @@ impl RefUnwindSafe for TestCases {}
 impl Drop for TestCases {
     fn drop(&mut self) {
         if !thread::panicking() {
-            self.runner.borrow_mut().run();
+            self.runner.borrow_mut().run(&self.args);
         }
     }
 }
